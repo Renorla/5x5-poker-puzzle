@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5x5 ポーカーパズル 最善手ナビ</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#1d2b24;color:#eee;margin:0;padding:10px}
+h1{font-size:17px;margin:2px 0 8px}
+.wrap{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+#board{display:grid;grid-template-columns:repeat(5,58px) 68px;gap:4px}
+.cell{width:58px;height:78px;background:#2e4a3c;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;font-size:12px;position:relative}
+.card{background:#fafafa;color:#111;font-size:20px;font-weight:bold;cursor:default}
+.red{color:#d22}
+.best{outline:3px solid gold;outline-offset:-1px}
+.hint{outline:2px dashed #8cf;outline-offset:-2px}
+.ev{font-size:13px;font-weight:bold}
+.tag{position:absolute;top:2px;left:4px;font-size:10px;color:#8cf}
+.lab{font-size:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#cfc;text-align:center;min-height:40px}
+.dim{color:#8a9}
+.panel{background:#24382e;padding:10px;border-radius:8px;max-width:520px}
+.slot{width:62px;height:80px;border:2px dashed #7a9;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:bold;cursor:pointer}
+.slot.filled{background:#fafafa;color:#111;border-style:solid}
+#picker{display:grid;grid-template-columns:repeat(13,1fr);gap:3px;margin-top:8px}
+#picker button{padding:6px 0;font-size:13px;font-weight:bold;border:none;border-radius:4px;background:#fafafa;cursor:pointer}
+#picker button:disabled{opacity:.2;cursor:default}
+button.act{padding:7px 12px;margin:3px 2px;border:none;border-radius:5px;background:#4a8;color:#fff;font-weight:bold;cursor:pointer}
+button.act.gray{background:#667}
+#status{margin-top:8px;font-size:14px;min-height:40px;line-height:1.5}
+input[type=text]{width:150px;padding:5px}
+select,input[type=number]{padding:4px}
+.score{font-size:15px;margin:6px 0}
+.modebox{margin-top:8px;padding:6px;border:1px solid #4a6;border-radius:6px;line-height:2}
+details{margin-top:10px;font-size:13px}
+#benchOut{margin-top:6px;line-height:1.6}
+</style>
+</head>
+<body>
+<h1>🃏 5x5 ポーカーパズル 最善手ナビ</h1>
+<div class="wrap">
+  <div>
+    <div id="board"></div>
+    <div class="score" id="score"></div>
+  </div>
+  <div class="panel">
+    <div style="display:flex;gap:16px;align-items:center">
+      <div><div>今のカード</div><div class="slot" id="slotCur"></div></div>
+      <div><div>次のカード</div><div class="slot" id="slotNxt"></div></div>
+      <div>
+        <button class="act" id="btnPlace">最善手に置く</button><br>
+        <button class="act gray" id="btnRun">再計算</button>
+      </div>
+    </div>
+    <div class="modebox">
+      モード <select id="mode">
+        <option value="ev">期待値モード（安定）</option>
+        <option value="target">目標点モード（高得点狙い）</option>
+      </select><br>
+      目標 <input type="number" id="tgt" value="170" style="width:60px">点　
+      攻撃度 <select id="alpha">
+        <option value="0.5">弱</option><option value="1" selected>中</option>
+        <option value="1.5">強</option><option value="2">最強</option>
+      </select>
+    </div>
+    <div style="margin-top:6px">
+      思考量 <select id="budget">
+        <option value="1500">軽い</option>
+        <option value="5000" selected>標準</option>
+        <option value="15000">強い</option>
+        <option value="40000">最強</option>
+        <option value="120000">確定（数十秒〜1分）</option>
+      </select>
+      <label><input type="checkbox" id="auto" checked>自動計算</label>
+    </div>
+    <div style="margin-top:6px">
+      入力: <input type="text" id="txt" placeholder="例: AS KH 10d">
+      <button class="act gray" id="btnTxt">追加</button>
+    </div>
+    <div id="picker"></div>
+    <div style="margin-top:8px">
+      <button class="act gray" id="btnUndo">1手戻す</button>
+      <button class="act gray" id="btnReset">リセット</button>
+    </div>
+    <div id="status"></div>
+    <details>
+      <summary>自動対戦テスト（期待値型 vs 攻撃型）</summary>
+      回数 <select id="benchN"><option>300</option><option selected>1000</option><option>3000</option></select>
+      <button class="act gray" id="btnBench">テスト開始</button>
+      <div id="benchOut"></div>
+    </details>
+  </div>
+</div>
+
+<script>
+// ===== 基本定義 =====
+const RANKS='23456789TJQKA', SUITS=['♠','♥','♦','♣'];
+const HAND={100:'RSF',75:'SF',50:'4カード',25:'フルハウス',20:'フラッシュ',15:'ストレート',10:'3カード',5:'2ペア',2:'1ペア',0:'役なし'};
+const LINES=[];
+for(let r=0;r<5;r++)LINES.push([0,1,2,3,4].map(c=>r*5+c));
+for(let c=0;c<5;c++)LINES.push([0,1,2,3,4].map(r=>r*5+c));
+LINES.push([0,6,12,18,24]);LINES.push([4,8,12,16,20]);
+const CELL_LINES=Array.from({length:25},()=>[]);
+LINES.forEach((L,l)=>L.forEach(i=>CELL_LINES[i].push(l)));
+// ストレートの窓（A2345 〜 TJQKA）
+const WIN=[0x100F],WIN_R=[[12,0,1,2,3]];
+for(let w=0;w<=8;w++){WIN.push(0x1F<<w);WIN_R.push([w,w+1,w+2,w+3,w+4]);}
+
+// ===== 役の見積もり点（期待値型／攻撃型）=====
+const H_EV ={r:100,s:75, q:50,f:25,fl:20,st:15,t:10,tp:5,p:2};
+const H_AGG={r:140,s:110,q:75,f:34,fl:24,st:14,t:8, tp:3,p:1};
+function mixH(a){const o={};for(const k in H_EV)o[k]=H_EV[k]+a*(H_AGG[k]-H_EV[k]);return o;}
+let H=H_EV;const UT=new Float64Array(101);
+function setWeights(h){H=h;UT.fill(0);UT[100]=h.r;UT[75]=h.s;UT[50]=h.q;UT[25]=h.f;UT[20]=h.fl;UT[15]=h.st;UT[10]=h.t;UT[5]=h.tp;UT[2]=h.p;}
+setWeights(H_EV);
+
+// ===== 超幾何確率テーブル =====
+const CH=[];for(let n=0;n<=52;n++){CH[n]=new Float64Array(n+1);CH[n][0]=1;CH[n][n]=1;for(let k=1;k<n;k++)CH[n][k]=CH[n-1][k-1]+CH[n-1][k];}
+const ch=(n,k)=>(k<0||k>n)?0:CH[n][k];
+const AT=new Float64Array(53*26*14*6);
+for(let D=0;D<=52;D++)for(let dr=0;dr<=25&&dr<=D;dr++){const tot=ch(D,dr);
+  for(let o=0;o<=13&&o<=D;o++){let cum=0;
+    for(let k=0;k<=5;k++){AT[((D*26+dr)*14+o)*6+k]=Math.max(0,1-cum);cum+=ch(o,k)*ch(D-o,dr-k)/tot;}}}
+let gOff=0;
+function setCtx(D,dr){if(dr<0)dr=0;if(dr>25)dr=25;if(dr>D)dr=D;gOff=(D*26+dr)*14;}
+function pAt(o,k){if(o>13)o=13;if(o<0)o=0;return AT[(gOff+o)*6+k];}
+const rankAv=new Int8Array(13),suitAv=new Int8Array(4),cardAv=new Uint8Array(52);
+function initAvail(pool){rankAv.fill(0);suitAv.fill(0);cardAv.fill(0);
+  for(const c of pool){rankAv[c%13]++;suitAv[(c/13)|0]++;cardAv[c]=1;}}
+
+// ===== 役判定 =====
+const cnt=new Int8Array(13);
+function score5(cs){
+  let mask=0,flush=true,dup=false;const s0=(cs[0]/13)|0;
+  for(let i=0;i<5;i++){const c=cs[i],r=c%13;if(mask>>r&1)dup=true;mask|=1<<r;if(((c/13)|0)!==s0)flush=false;}
+  if(!dup){let str=false;for(let w=0;w<10;w++)if(mask===WIN[w]){str=true;break;}
+    if(str&&flush)return mask===WIN[9]?100:75;
+    if(flush)return 20;if(str)return 15;return 0;}
+  for(let i=0;i<5;i++)cnt[cs[i]%13]++;
+  let p=0,t=0,q=0;
+  for(let i=0;i<5;i++){const r=cs[i]%13,k=cnt[r];if(k){if(k===2)p++;else if(k===3)t++;else if(k===4)q++;cnt[r]=0;}}
+  if(q)return 50;if(t&&p)return 25;if(t)return 10;if(p===2)return 5;if(p)return 2;return 0;
+}
+
+// ===== 途中ラインの評価 =====
+const DISC=[1,0.8,0.6,0.45,0.35,0.3];
+function evalPartial(cs,n){
+  if(n===0)return 0;
+  if(n===5)return UT[score5(cs)];
+  const e=5-n,d=DISC[e];
+  let mask=0,dup=false,flush=true;const s0=(cs[0]/13)|0;
+  for(let i=0;i<n;i++){const c=cs[i],r=c%13;if(mask>>r&1)dup=true;mask|=1<<r;if(((c/13)|0)!==s0)flush=false;}
+  let v=0;
+  if(!dup){
+    if(flush){
+      v+=H.fl*d*pAt(suitAv[s0],e);
+      for(let w=0;w<10;w++){if(mask&~WIN[w])continue;let p=1;
+        for(const r of WIN_R[w]){if(!(mask>>r&1)){if(!cardAv[s0*13+r]){p=0;break;}p*=pAt(1,1);}}
+        if(p>0)v+=(w===9?H.r:H.s)*d*p;}
+    }
+    let best=0;
+    for(let w=0;w<10;w++){if(mask&~WIN[w])continue;let p=1;
+      for(const r of WIN_R[w])if(!(mask>>r&1))p*=pAt(rankAv[r],1);
+      if(p>best)best=p;}
+    v+=H.st*d*best;
+    let sa=0;for(let i=0;i<n;i++)sa+=rankAv[cs[i]%13];
+    if(n===1)v+=0.75*H.p*d;else v+=(n===4?1:1.25)*H.p*d*pAt(sa,1);
+    return v;
+  }
+  for(let i=0;i<n;i++)cnt[cs[i]%13]++;
+  let a4=-1,a3=-1,p1=-1,p2=-1,k1=-1,k2=-1;
+  for(let i=0;i<n;i++){const r=cs[i]%13,k=cnt[r];if(!k)continue;
+    if(k===4)a4=r;else if(k===3)a3=r;else if(k===2){if(p1<0)p1=r;else p2=r;}else{if(k1<0)k1=r;else k2=r;}
+    cnt[r]=0;}
+  if(a4>=0)return H.q;
+  if(a3>=0){const pT=pAt(rankAv[a3],1);
+    if(n===4)return H.t+d*((H.f-H.t)*pAt(rankAv[k1],1)+(H.q-H.t)*pT);
+    return H.t+d*((H.q-H.t)*pT+0.4*(H.f-H.t));}
+  if(p2>=0)return H.tp+d*(H.f-H.tp)*pAt(rankAv[p1]+rankAv[p2],1);
+  const pP=pAt(rankAv[p1],1);
+  if(n===2)return H.p+d*((H.t-H.p)*pP+(H.tp-H.p));
+  if(n===3){const pK=pAt(rankAv[k1],1);return H.p+d*((H.t-H.p)*pP+(H.tp-H.p)*pK+0.3*H.f*pP*pK);}
+  return H.p+d*((H.t-H.p)*pP+(H.tp-H.p)*pAt(rankAv[k1]+rankAv[k2],1));
+}
+const buf=[0,0,0,0,0];
+function evalLine(b,l,cell,x){let n=0;for(const c of LINES[l]){const v=(c===cell)?x:b[c];if(v>=0)buf[n++]=v;}return evalPartial(buf,n);}
+function heur(b){let s=0;for(let l=0;l<12;l++)s+=evalLine(b,l,-1,-1);return s;}
+function totalScore(b){let s=0;for(const L of LINES){const cs=L.map(i=>b[i]);if(cs.every(x=>x>=0))s+=score5(cs);}return s;}
+
+// ===== ロールアウト =====
+const lv=new Float64Array(12);
+function greedyCell(b,x,empt){
+  for(let l=0;l<12;l++)lv[l]=evalLine(b,l,-1,-1);
+  let best=-1e9,bc=empt[0];
+  for(const c of empt){let dl=0;for(const l of CELL_LINES[c])dl+=evalLine(b,l,c,x)-lv[l];if(dl>best){best=dl;bc=c;}}
+  return bc;
+}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+function rollout(b0,pool,seed){
+  const b=b0.slice(),rng=mulberry32(seed),p=pool.slice(),empt=[];
+  for(let i=0;i<25;i++)if(b[i]<0)empt.push(i);
+  const m=empt.length;
+  for(let i=0;i<m;i++){const j=i+Math.floor(rng()*(p.length-i));const t=p[i];p[i]=p[j];p[j]=t;}
+  initAvail(p);let D=p.length;
+  for(let i=0;i<m;i++){
+    const x=p[i];rankAv[x%13]--;suitAv[(x/13)|0]--;cardAv[x]=0;D--;
+    setCtx(D,empt.length-1);
+    const c=empt.length===1?empt[0]:greedyCell(b,x,empt);
+    b[c]=x;empt.splice(empt.indexOf(c),1);
+  }
+  return totalScore(b);
+}
+
+// ===== 探索（決定的シード＋候補絞り込み＋決勝戦）=====
+const SOFT=4;
+const sleep=()=>new Promise(r=>setTimeout(r,0));
+function opts(){return{md:$('mode').value,tg:+$('tgt').value||170,al:+$('alpha').value};}
+// 決定的なシード列（同じ r, j なら常に同じ値）
+function seedAt(r,j){
+  let x=(Math.imul(r+1,0x9E3779B1)^Math.imul(j+1,0x85EBCA77))|0;
+  x^=x>>>16;x=Math.imul(x,0x7feb352d);x^=x>>>15;x=Math.imul(x,0x846ca68b);x^=x>>>16;
+  return x>>>0;
+}
+async function search(board,cur,nxt,budget,id,prog){
+  const {md,tg,al}=opts();
+  setWeights(md==='ev'?H_EV:mixH(al));
+  const met=md==='ev'?(x=>x):(x=>1/(1+Math.exp(-(x-tg+0.5)/SOFT)));
+  const empt=[];for(let i=0;i<25;i++)if(board[i]<0)empt.push(i);
+  const pool=[];for(let c=0;c<52;c++)if(!board.includes(c)&&c!==cur&&c!==nxt)pool.push(c);
+  let cands=[];
+  const mk=(a,b,h)=>({a,b,h,sum:0,n:0,rs:[],raw:0,hit:0,vals:[]});
+  if(nxt>=0&&empt.length>=2){
+    initAvail(pool);setCtx(pool.length,empt.length-2);
+    for(const a of empt){const list=[];
+      for(const bb of empt){if(bb===a)continue;const t=board.slice();t[a]=cur;t[bb]=nxt;list.push({a,b:bb,h:heur(t)});}
+      list.sort((x,y)=>y.h-x.h||x.b-y.b);
+      list.slice(0,2).forEach(o=>cands.push(mk(o.a,o.b,o.h)));}
+  }else{
+    initAvail(pool);setCtx(pool.length,empt.length-1);
+    for(const a of empt){const t=board.slice();t[a]=cur;cands.push(mk(a,-1,heur(t)));}
+  }
+  const roundPer=[];let done=0,last=performance.now(),r=0;
+  const mean=c=>c.sum/c.n;
+  const byMean=(x,y)=>mean(y)-mean(x)||y.h-x.h||x.a-y.a||x.b-y.b;
+  async function runRound(list,per,keep){
+    roundPer.push(per);
+    for(const cd of list){
+      const t=board.slice();t[cd.a]=cur;if(cd.b>=0)t[cd.b]=nxt;
+      let s=0;
+      for(let j=0;j<per;j++){
+        const x=rollout(t,pool,seedAt(r,j)),m=met(x);
+        s+=m;cd.raw+=x;if(x>=tg)cd.hit++;if(keep)cd.vals.push(m);done++;
+        if((j&31)===31&&performance.now()-last>60){
+          prog(done,budget);await sleep();last=performance.now();
+          if(id!==searchId)return false;}
+      }
+      cd.rs[r]=s;cd.sum+=s;cd.n+=per;
+    }
+    r++;return true;
+  }
+  // 第1段階：候補を3つまで絞る（思考量の40%）
+  const FIN=3;let alive=cands.slice();
+  const r1=alive.length>FIN?Math.ceil(Math.log2(alive.length/FIN)):0;
+  for(let k=0;k<r1;k++){
+    const per=Math.max(20,Math.floor(budget*0.4/(r1*alive.length)));
+    if(!await runRound(alive,per,false))return null;
+    alive.sort(byMean);
+    alive=alive.slice(0,Math.max(FIN,Math.ceil(alive.length/2)));
+  }
+  // 第2段階：決勝戦（残り60%。差がはっきりしたら早めに終了）
+  const fin=alive.slice(0,FIN);
+  const per2=Math.max(200,Math.floor(budget*0.6/(fin.length*8)));
+  let diff=0,se=0;
+  for(let k=0;k<8;k++){
+    if(!await runRound(fin,per2,true))return null;
+    fin.sort(byMean);
+    if(fin.length<2)break;
+    const A=fin[0].vals,B=fin[1].vals,n=A.length;
+    let s=0,s2=0;for(let j=0;j<n;j++){const d=A[j]-B[j];s+=d;s2+=d*d;}
+    diff=s/n;se=Math.sqrt(Math.max(0,s2/n-diff*diff)/(n-1));
+    if(k>=1&&(diff>3*se||se===0))break;
+  }
+  prog(budget,budget);
+  // 共通乱数による補正：最善手との「同じ配り順での差」を最善手の最終値に足す
+  const best=fin[0],bestMean=mean(best),cellVal={};
+  for(const cd of cands){const k=cd.rs.length;if(!k)continue;
+    let cs=0,bs=0,n=0;
+    for(let j=0;j<k;j++){cs+=cd.rs[j];bs+=best.rs[j];n+=roundPer[j];}
+    const v=bestMean+(cs-bs)/n;
+    if(cellVal[cd.a]===undefined||v>cellVal[cd.a])cellVal[cd.a]=v;}
+  return {best,cellVal,md,tg,second:fin[1]||null,diff,se};
+}
+
+// ===== 自動対戦テスト（こちらは毎回ランダム）=====
+async function bench(){
+  searchId++;const N=+$('benchN').value,{tg,al}=opts();
+  const ev=[],ag=[],deck=[...Array(52).keys()],empty=new Int8Array(25).fill(-1);
+  let last=performance.now();
+  for(let g=0;g<N;g++){
+    const seed=(Math.random()*2**31)|0;
+    setWeights(H_EV);ev.push(rollout(empty,deck,seed));
+    setWeights(mixH(al));ag.push(rollout(empty,deck,seed));
+    if(performance.now()-last>60){$('benchOut').textContent=`テスト中… ${g}/${N}`;await sleep();last=performance.now();}
+  }
+  const st=a=>{const m=a.reduce((x,y)=>x+y,0)/a.length,rt=t=>(a.filter(x=>x>=t).length/a.length*100).toFixed(1);
+    return `平均 <b>${m.toFixed(1)}</b> / 100+ ${rt(100)}% / 150+ ${rt(150)}% / ${tg}+ <b>${rt(tg)}%</b> / 最高 ${Math.max(...a)}`;};
+  $('benchOut').innerHTML=`期待値型: ${st(ev)}<br>攻撃型(${$('alpha').selectedOptions[0].text}): ${st(ag)}<br><span class="dim">※先読みなしの簡易版で打たせた結果です。実際のナビより点数は低めに出ますが、2つの打ち方の比較には使えます</span>`;
+  changed();
+}
+
+// ===== UI =====
+let board=new Int8Array(25).fill(-1),cur=-1,nxt=-1,hist=[],result=null,searchId=0;
+const $=id=>document.getElementById(id);
+const used=c=>board.includes(c)||c===cur||c===nxt;
+const emptiesCount=()=>board.filter(v=>v<0).length;
+const pos=i=>`${Math.floor(i/5)+1}行${i%5+1}列`;
+function cardHTML(c){const r=RANKS[c%13]==='T'?'10':RANKS[c%13],s=(c/13)|0;return `<span class="${s===1||s===2?'red':''}">${SUITS[s]}${r}</span>`;}
+function lineLabel(l){const cs=LINES[l].map(i=>board[i]);if(cs.some(x=>x<0))return '<span class="dim">-</span>';const s=score5(cs);return `${HAND[s]}<b>${s}</b>`;}
+function render(){
+  const bd=$('board');bd.innerHTML='';
+  const vals=result?Object.values(result.cellVal):[];
+  const mx=vals.length?Math.max(...vals):0,mn=vals.length?Math.min(...vals):0;
+  for(let r=0;r<5;r++){
+    for(let c=0;c<5;c++){const i=r*5+c,d=document.createElement('div');
+      if(board[i]>=0){d.className='cell card';d.innerHTML=cardHTML(board[i]);}
+      else{d.className='cell';
+        if(result){const v=result.cellVal[i];
+          if(v!==undefined){const t=mx>mn?(v-mn)/(mx-mn):1;d.style.background=`hsl(${130*t},45%,${22+14*t}%)`;
+            d.innerHTML=`<div class="ev">${result.md==='ev'?v.toFixed(1):(v*100).toFixed(1)+'%'}</div>`;}
+          if(result.best.a===i)d.classList.add('best');
+          if(result.best.b===i){d.classList.add('hint');d.innerHTML+=`<span class="tag">次</span>`;}}
+        d.onclick=()=>placeAt(i);}
+      bd.appendChild(d);}
+    const lb=document.createElement('div');lb.className='lab';lb.innerHTML=lineLabel(r);bd.appendChild(lb);}
+  for(let c=0;c<5;c++){const lb=document.createElement('div');lb.className='lab';lb.innerHTML=lineLabel(5+c);bd.appendChild(lb);}
+  const cn=document.createElement('div');cn.className='lab';cn.innerHTML=`↘${lineLabel(10)}<br>↙${lineLabel(11)}`;bd.appendChild(cn);
+  $('score').innerHTML=`確定点: <b>${totalScore(board)}</b>　（配置 ${25-emptiesCount()}/25）`;
+  const sc=$('slotCur'),sn=$('slotNxt');
+  sc.className='slot'+(cur>=0?' filled':'');sc.innerHTML=cur>=0?cardHTML(cur):'';
+  sn.className='slot'+(nxt>=0?' filled':'');sn.innerHTML=nxt>=0?cardHTML(nxt):'';
+  $('picker').querySelectorAll('button').forEach(b=>b.disabled=used(+b.dataset.c));
+  if(result){const b=result.best,avg=(b.raw/b.n).toFixed(1);
+    let h=`<b style="color:gold">最善手: ${pos(b.a)}</b>${b.b>=0?`（次のカードは ${pos(b.b)} を想定）`:''}<br>`;
+    if(result.md==='ev')h+=`最終スコア期待値 ≈ <b>${avg}</b> 点（${b.n}回試行）`;
+    else{h+=`${result.tg}点到達率 ≈ <b>${(b.hit/b.n*100).toFixed(1)}%</b>（平均 ${avg} 点・${b.n}回試行）`;
+      if(b.hit===0&&b.n>=200)h+=`<br><span style="color:#f99">この盤面から${result.tg}点はほぼ届きません。期待値モードへの切り替えがおすすめです</span>`;}
+    if(result.second){const s=result.second,u=result.md==='ev'?1:100,unit=result.md==='ev'?'点':'%pt';
+      const where=s.a===b.a?`同じマス（次のカードの置き場所違い）`:pos(s.a);
+      h+=`<br>2位 ${where} との差: ${(result.diff*u).toFixed(2)}${unit}（誤差 ±${(2*result.se*u).toFixed(2)}）`;
+      if(result.diff<2*result.se)h+=`<br><span style="color:#fc6">ほぼ互角：どちらに置いても差はごくわずかです</span>`;}
+    h+=`<br><span class="dim">計算時間 ${(result.ms/1000).toFixed(1)}秒</span>`;
+    $('status').innerHTML=h;}
+  else if(emptiesCount()===0)$('status').innerHTML=`完成！ 最終スコア <b>${totalScore(board)}</b> 点`;
+}
+function buildPicker(){const p=$('picker');
+  for(let s=0;s<4;s++)for(let r=12;r>=0;r--){const c=s*13+r,b=document.createElement('button');
+    b.dataset.c=c;b.innerHTML=cardHTML(c);b.onclick=()=>pick(c);p.appendChild(b);}}
+function pick(c){if(used(c)||emptiesCount()===0)return;if(cur<0)cur=c;else if(nxt<0)nxt=c;else return;changed();}
+function changed(){result=null;searchId++;render();
+  if($('auto').checked&&cur>=0&&(nxt>=0||emptiesCount()<=1))run();}
+async function run(){if(cur<0||emptiesCount()===0)return;const id=++searchId;
+  result=null;render();const budget=+$('budget').value,t0=performance.now();
+  $('status').textContent='計算中…';
+  const res=await search(board,cur,nxt,budget,id,(d,t)=>{$('status').textContent=`計算中… ${Math.min(99,Math.round(d/t*100))}%（${((performance.now()-t0)/1000).toFixed(0)}秒）`;});
+  if(!res||id!==searchId)return;res.ms=performance.now()-t0;result=res;render();}
+function placeAt(i){if(board[i]>=0||cur<0)return;hist.push({b:board.slice(),cur,nxt});
+  board[i]=cur;cur=nxt;nxt=-1;changed();}
+$('slotCur').onclick=()=>{cur=nxt;nxt=-1;changed();};
+$('slotNxt').onclick=()=>{nxt=-1;changed();};
+$('btnPlace').onclick=()=>{if(result)placeAt(result.best.a);};
+$('btnRun').onclick=run;
+$('btnUndo').onclick=()=>{const h=hist.pop();if(!h)return;board=h.b;cur=h.cur;nxt=h.nxt;changed();};
+$('btnReset').onclick=()=>{if(!confirm('リセットしますか？'))return;board=new Int8Array(25).fill(-1);cur=nxt=-1;hist=[];changed();};
+$('mode').onchange=changed;$('tgt').onchange=changed;$('alpha').onchange=changed;$('budget').onchange=changed;
+$('btnBench').onclick=bench;
+function parseCard(t){t=t.trim().toUpperCase().replace('10','T');
+  const sm={S:0,'♠':0,H:1,'♥':1,D:2,'♦':2,C:3,'♣':3};let s=-1,r=-1;
+  for(const x of t){if(sm[x]!==undefined)s=sm[x];else if(RANKS.includes(x))r=RANKS.indexOf(x);}
+  return(s>=0&&r>=0)?s*13+r:-1;}
+function addText(){$('txt').value.split(/[\s,、]+/).filter(Boolean).forEach(t=>{const c=parseCard(t);if(c>=0)pick(c);});$('txt').value='';}
+$('btnTxt').onclick=addText;
+$('txt').onkeydown=e=>{if(e.key==='Enter')addText();};
+buildPicker();render();
+</script>
+</body>
+</html>
